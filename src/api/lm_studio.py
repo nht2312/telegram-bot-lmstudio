@@ -1,4 +1,5 @@
 import requests
+import json
 from src.config.settings import (
     LM_STUDIO_MODELS_URL,
     LM_STUDIO_CHAT_COMPLETIONS_URL,
@@ -100,3 +101,53 @@ def summarize_conversation(conversation_id: int, model: str) -> str:
         return data["choices"][0]["text"].strip()
     except:
         return "Failed to extract summary."
+
+async def stream_lm_studio_chat(messages: list, model: str):
+    try:
+        headers = {"Content-Type": "application/json"}
+        payload = {
+            "model": model,
+            "messages": messages,
+            "max_tokens": conversation_params["max_tokens"],
+            "temperature": conversation_params["temperature"],
+            "top_p": conversation_params["top_p"],
+            "top_k": conversation_params["top_k"],
+            "presence_penalty": conversation_params["presence_penalty"],
+            "frequency_penalty": conversation_params["frequency_penalty"],
+            "logit_bias": conversation_params["logit_bias"],
+            "stream": True,
+        }
+        if conversation_params["stop"] is not None:
+            payload["stop"] = conversation_params["stop"]
+        if conversation_params["repeat_penalty"] is not None:
+            payload["repeat_penalty"] = conversation_params["repeat_penalty"]
+        if conversation_params["seed"] is not None:
+            payload["seed"] = conversation_params["seed"]
+        
+        resp = requests.post(LM_STUDIO_CHAT_COMPLETIONS_URL, headers=headers, json=payload, stream=True)
+        resp.raise_for_status()
+        
+        full_text = ""
+        for line in resp.iter_lines():
+            if line:
+                line = line.decode('utf-8')
+                if line.startswith('data: '):
+                    data_str = line[6:]
+                    if data_str == '[DONE]':
+                        break
+                    try:
+                        data = json.loads(data_str)
+                        if 'choices' in data and len(data['choices']) > 0:
+                            delta = data['choices'][0].get('delta', {})
+                            if 'content' in delta:
+                                content = delta['content']
+                                full_text += content
+                                yield content
+                    except json.JSONDecodeError:
+                        continue
+        
+        yield None
+        
+    except requests.RequestException as e:
+        logger.error(f"Error in streaming chat completions: {e}")
+        yield {"error": str(e)}

@@ -16,7 +16,8 @@ from src.api.lm_studio import call_lm_studio_chat, stream_lm_studio_chat, summar
 from src.config.logging_config import logger
 from src.config.settings import (
     DB_FILE, TOKEN_THRESHOLD, LOADING_MESSAGE_ENABLED, LOADING_SUMMARIZE_ENABLED,
-    LOADING_UPDATE_INTERVAL, LOADING_TIMEOUT, STREAMING_ENABLED, STREAM_UPDATE_INTERVAL, STREAM_CANCEL_TIMEOUT
+    LOADING_UPDATE_INTERVAL, LOADING_TIMEOUT, STREAMING_ENABLED, STREAM_UPDATE_INTERVAL, 
+    STREAM_MIN_CHARS, STREAM_CANCEL_TIMEOUT
 )
 
 streaming_active = {}
@@ -107,6 +108,7 @@ async def handle_streaming(update: Update, context: ContextTypes.DEFAULT_TYPE, m
     response_msg = await update.message.reply_text("⚡ Generating...")
     
     full_text = ""
+    prev_text_len = 0
     start_time = time.time()
     last_update = time.time()
     update_interval = STREAM_UPDATE_INTERVAL
@@ -126,10 +128,12 @@ async def handle_streaming(update: Update, context: ContextTypes.DEFAULT_TYPE, m
                     pass
                 return
             
-            full_text += chunk
+            full_text += str(chunk)
             
             current_time = time.time()
-            if current_time - last_update >= update_interval and len(full_text) > 0:
+            chars_since_update = len(full_text) - prev_text_len
+            
+            if current_time - last_update >= update_interval and chars_since_update >= STREAM_MIN_CHARS:
                 try:
                     escaped = escape_html(full_text[:2000] + ("..." if len(full_text) > 2000 else ""))
                     keyboard = [[InlineKeyboardButton("⏹ Cancel", callback_data="cancel_stream")]]
@@ -138,6 +142,7 @@ async def handle_streaming(update: Update, context: ContextTypes.DEFAULT_TYPE, m
                         reply_markup=InlineKeyboardMarkup(keyboard)
                     )
                     last_update = current_time
+                    prev_text_len = len(full_text)
                 except telegram.error.BadRequest:
                     pass
         

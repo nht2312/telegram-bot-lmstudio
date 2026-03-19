@@ -186,3 +186,139 @@ def get_summaries(conversation_id: int) -> list:
             ORDER BY timestamp ASC
         """, (conversation_id,))
         return [r[0] for r in c.fetchall()]
+
+# ------------------------------------------------------------------------------
+# Statistics Functions
+# ------------------------------------------------------------------------------
+def init_usage_log_table():
+    with sqlite3.connect(DB_FILE) as conn:
+        c = conn.cursor()
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS usage_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                conversation_id INTEGER,
+                model TEXT,
+                prompt_tokens INTEGER,
+                completion_tokens INTEGER,
+                total_tokens INTEGER,
+                response_time_ms INTEGER,
+                timestamp INTEGER NOT NULL
+            )
+        """)
+
+def log_usage(user_id: int, conversation_id: int, model: str, 
+              prompt_tokens: int, completion_tokens: int, total_tokens: int,
+              response_time_ms: int):
+    with sqlite3.connect(DB_FILE) as conn:
+        c = conn.cursor()
+        c.execute("""
+            INSERT INTO usage_log 
+            (user_id, conversation_id, model, prompt_tokens, completion_tokens, 
+             total_tokens, response_time_ms, timestamp)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, (user_id, conversation_id, model, prompt_tokens, completion_tokens,
+              total_tokens, response_time_ms, int(time.time())))
+
+def get_user_stats(user_id: int) -> dict:
+    with sqlite3.connect(DB_FILE) as conn:
+        c = conn.cursor()
+        
+        c.execute("SELECT COUNT(*) FROM messages m JOIN user_conversations uc ON m.conversation_id = uc.conversation_id WHERE uc.user_id = ?", (user_id,))
+        total_messages = c.fetchone()[0]
+        
+        c.execute("SELECT COUNT(*) FROM user_conversations WHERE user_id = ?", (user_id,))
+        total_conversations = c.fetchone()[0]
+        
+        c.execute("""
+            SELECT COALESCE(SUM(total_tokens), 0), COALESCE(SUM(prompt_tokens), 0),
+                   COALESCE(SUM(completion_tokens), 0), COALESCE(AVG(response_time_ms), 0), COUNT(*)
+            FROM usage_log WHERE user_id = ?
+        """, (user_id,))
+        row = c.fetchone()
+        
+        c.execute("""
+            SELECT model, COUNT(*) FROM usage_log WHERE user_id = ?
+            GROUP BY model ORDER BY COUNT(*) DESC LIMIT 1
+        """, (user_id,))
+        top_model_row = c.fetchone()
+        
+        return {
+            "total_messages": total_messages,
+            "total_conversations": total_conversations,
+            "total_tokens": row[0],
+            "prompt_tokens": row[1],
+            "completion_tokens": row[2],
+            "avg_response_time_ms": round(row[3], 0),
+            "total_api_calls": row[4],
+            "top_model": top_model_row[0] if top_model_row else None
+        }
+
+def get_global_stats() -> dict:
+    with sqlite3.connect(DB_FILE) as conn:
+        c = conn.cursor()
+        
+        c.execute("SELECT COUNT(*) FROM users")
+        total_users = c.fetchone()[0]
+        
+        c.execute("SELECT COUNT(*) FROM user_conversations")
+        total_conversations = c.fetchone()[0]
+        
+        c.execute("SELECT COUNT(*) FROM messages")
+        total_messages = c.fetchone()[0]
+        
+        c.execute("""
+            SELECT COALESCE(SUM(total_tokens), 0), COALESCE(SUM(prompt_tokens), 0),
+                   COALESCE(SUM(completion_tokens), 0), COALESCE(AVG(response_time_ms), 0), COUNT(*)
+            FROM usage_log
+        """)
+        row = c.fetchone()
+        
+        c.execute("SELECT model, COUNT(*) FROM usage_log GROUP BY model ORDER BY COUNT(*) DESC")
+        model_usage = c.fetchall()
+        
+        c.execute("""
+            SELECT u.user_id, u.username, u.first_name, COALESCE(SUM(ul.total_tokens), 0) as total_tokens, COUNT(ul.id) as api_calls
+            FROM users u LEFT JOIN usage_log ul ON u.user_id = ul.user_id
+            GROUP BY u.user_id ORDER BY total_tokens DESC LIMIT 10
+        """)
+        top_users = c.fetchall()
+        
+        return {
+            "total_users": total_users,
+            "total_conversations": total_conversations,
+            "total_messages": total_messages,
+            "total_tokens": row[0],
+            "prompt_tokens": row[1],
+            "completion_tokens": row[2],
+            "avg_response_time_ms": round(row[3], 1) if row[3] else 0,
+            "total_api_calls": row[4],
+            "model_usage": model_usage,
+            "top_users": top_users
+        }
+
+def get_conversation_stats(conversation_id: int) -> dict:
+    with sqlite3.connect(DB_FILE) as conn:
+        c = conn.cursor()
+        
+        c.execute("SELECT COUNT(*) FROM messages WHERE conversation_id = ?", (conversation_id,))
+        message_count = c.fetchone()[0]
+        
+        c.execute("""
+            SELECT COALESCE(SUM(total_tokens), 0), COALESCE(SUM(prompt_tokens), 0),
+                   COALESCE(SUM(completion_tokens), 0), COUNT(*)
+            FROM usage_log WHERE conversation_id = ?
+        """, (conversation_id,))
+        row = c.fetchone()
+        
+        c.execute("SELECT COUNT(*) FROM conversation_summary WHERE conversation_id = ?", (conversation_id,))
+        summary_count = c.fetchone()[0]
+        
+        return {
+            "message_count": message_count,
+            "total_tokens": row[0],
+            "prompt_tokens": row[1],
+            "completion_tokens": row[2],
+            "api_calls": row[3],
+            "summaries_count": summary_count
+        }

@@ -15,7 +15,7 @@ from src.handlers.commands import (
     clear_context_command, show_summaries_command, new_conversation_command,
     list_threads_command, switch_thread_command, set_model_command,
     set_system_prompt_command, show_system_prompt_command,
-    list_models_command, completion_command, embedding_command
+    list_models_command, completion_command, embedding_command, stats_command
 )
 from src.handlers.messages import chat
 from src.config.logging_config import logger
@@ -54,6 +54,7 @@ async def main():
     app.add_handler(CommandHandler("completion", completion_command))
     app.add_handler(CommandHandler("embedding", embedding_command))
     app.add_handler(CommandHandler("summarize_thread", summarize_thread_command))
+    app.add_handler(CommandHandler("stats", stats_command))
 
     # Chat
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chat))

@@ -1,5 +1,6 @@
 import sqlite3
 import re
+import time
 from telegram import Update
 from telegram.constants import ParseMode
 from telegram.ext import ContextTypes
@@ -49,7 +50,8 @@ from src.database.models import (
     get_user_settings, set_user_setting, create_conversation,
     get_user_conversations, switch_conversation, update_conversation_model,
     update_conversation_system_prompt, get_messages, clear_conversation_messages,
-    append_summary, get_summaries
+    append_summary, get_summaries, get_user_stats, get_global_stats,
+    get_conversation_stats, init_usage_log_table, log_usage
 )
 from src.api.lm_studio import (
     list_models, call_lm_studio_completions, call_lm_studio_embeddings,
@@ -327,13 +329,19 @@ async def completion_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         f"Requesting completion with model: `{model}`...",
         parse_mode=ParseMode.MARKDOWN
     )
+    start_time = time.time()
     data = call_lm_studio_completions(prompt, model)
+    elapsed_ms = int((time.time() - start_time) * 1000)
+    
     if "error" in data:
         await update.message.reply_text(f"*Error:* {data['error']}", parse_mode=ParseMode.MARKDOWN)
         return
 
     try:
         txt = data["choices"][0]["text"]
+        usage = data.get("usage", {})
+        log_usage(user_id, cid, model, usage.get("prompt_tokens", 0), 
+                  usage.get("completion_tokens", 0), usage.get("total_tokens", 0), elapsed_ms)
         if not txt.strip():
             txt = "*No content returned.*"
         html_content = markdown_to_html(txt)
@@ -364,13 +372,17 @@ async def embedding_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Requesting embedding with model: `{model}`...",
         parse_mode=ParseMode.MARKDOWN
     )
+    start_time = time.time()
     data = call_lm_studio_embeddings(txt, model)
+    elapsed_ms = int((time.time() - start_time) * 1000)
+    
     if "error" in data:
         await update.message.reply_text(f"*Error:* {data['error']}", parse_mode=ParseMode.MARKDOWN)
         return
 
     try:
         emb = data["data"][0]["embedding"]
+        log_usage(user_id, cid, model, 0, 0, len(emb), elapsed_ms)
         truncated = emb[:10]
         emb_preview = ", ".join(str(x) for x in truncated)
         await update.message.reply_text(
@@ -379,3 +391,98 @@ async def embedding_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     except:
         await update.message.reply_text("*No embedding data returned.*", parse_mode=ParseMode.MARKDOWN)
+
+async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    args = context.args
+    
+    if args and args[0].lower() in ["global", "admin"]:
+        await show_global_stats(update)
+    elif args and args[0].lower() == "thread":
+        await show_thread_stats(update, context)
+    else:
+        await show_user_stats(update)
+
+async def show_user_stats(update: Update):
+    user_id = update.effective_user.id
+    stats = get_user_stats(user_id)
+    
+    name = update.effective_user.first_name or "User"
+    
+    msg = f"""📊 *Statistics for {name}*
+
+👤 *Conversations:* `{stats['total_conversations']}`
+💬 *Messages:* `{stats['total_messages']}`
+🔄 *API Calls:* `{stats['total_api_calls']}`
+
+🤖 *Tokens:*
+  • Prompt: `{stats['prompt_tokens']:,}`
+  • Completion: `{stats['completion_tokens']:,}`
+  • Total: `{stats['total_tokens']:,}`
+
+⚡ *Avg Response Time:* `{stats['avg_response_time_ms']:.0f}ms`
+🧠 *Top Model:* `{stats['top_model'] or 'N/A'}`"""
+    
+    await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
+
+async def show_global_stats(update: Update):
+    stats = get_global_stats()
+    
+    model_lines = ""
+    if stats['model_usage']:
+        model_lines = "\n\n📈 *Model Usage:*\n"
+        for model, count in stats['model_usage']:
+            model_short = model[:30] if len(model) > 30 else model
+            model_lines += f"  • `{model_short}`: `{count}` calls\n"
+    
+    top_users_lines = ""
+    if stats['top_users']:
+        top_users_lines = "\n\n🏆 *Top 10 Users by Tokens:*\n"
+        for i, (uid, username, first_name, tokens, calls) in enumerate(stats['top_users'], 1):
+            display_name = first_name or username or str(uid)
+            top_users_lines += f"  {i}. {display_name}: `{tokens:,}` tokens\n"
+    
+    msg = f"""📊 *Global Statistics*
+
+👥 *Users:* `{stats['total_users']}`
+💬 *Total Conversations:* `{stats['total_conversations']}`
+📝 *Total Messages:* `{stats['total_messages']}`
+🔄 *Total API Calls:* `{stats['total_api_calls']}`
+
+🤖 *Tokens:*
+  • Prompt: `{stats['prompt_tokens']:,}`
+  • Completion: `{stats['completion_tokens']:,}`
+  • Total: `{stats['total_tokens']:,}`
+
+⚡ *Avg Response Time:* `{stats['avg_response_time_ms']:.1f}ms`{model_lines}{top_users_lines}"""
+    
+    await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
+
+async def show_thread_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    cid = get_user_settings(user_id)["active_conversation_id"]
+    
+    if not cid:
+        await update.message.reply_text("*No active conversation.*", parse_mode=ParseMode.MARKDOWN)
+        return
+    
+    stats = get_conversation_stats(cid)
+    
+    with sqlite3.connect(DB_FILE) as conn:
+        c = conn.cursor()
+        c.execute("SELECT conversation_name FROM user_conversations WHERE conversation_id = ?", (cid,))
+        row = c.fetchone()
+    name = row[0] if row else f"Thread {cid}"
+    
+    msg = f"""📊 *Statistics for {name}*
+
+💬 *Messages:* `{stats['message_count']}`
+🔄 *API Calls:* `{stats['api_calls']}`
+📝 *Summaries:* `{stats['summaries_count']}`
+
+🤖 *Tokens:*
+  • Prompt: `{stats['prompt_tokens']:,}`
+  • Completion: `{stats['completion_tokens']:,}`
+  • Total: `{stats['total_tokens']:,}`"""
+    
+    await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)

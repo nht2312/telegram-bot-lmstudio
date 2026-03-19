@@ -9,7 +9,8 @@ from telegram.ext import ContextTypes
 
 from src.database.models import (
     upsert_user, get_user_settings, create_conversation, set_user_setting,
-    append_message, get_messages, append_summary, clear_conversation_messages
+    append_message, get_messages, append_summary, clear_conversation_messages,
+    log_usage, init_usage_log_table
 )
 from src.api.lm_studio import call_lm_studio_chat, summarize_conversation
 from src.config.logging_config import logger
@@ -81,6 +82,9 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     text = update.message.text
     upsert_user(user)
+    
+    init_usage_log_table()
+    start_time = time.time()
 
     s = get_user_settings(user.id)
     cid = s["active_conversation_id"]
@@ -133,6 +137,14 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         assistant_text = data["choices"][0]["message"]["content"]
         usage = data.get("usage", {})
+        
+        prompt_tokens = usage.get("prompt_tokens", 0)
+        completion_tokens = usage.get("completion_tokens", 0)
+        total_tokens = usage.get("total_tokens", 0)
+        
+        if total_tokens > 0:
+            elapsed_ms = int((time.time() - start_time) * 1000) if 'start_time' in dir() else 0
+            log_usage(user.id, cid, model, prompt_tokens, completion_tokens, total_tokens, elapsed_ms)
     except:
         await update.message.reply_text("No content in response.", parse_mode=ParseMode.HTML)
         return

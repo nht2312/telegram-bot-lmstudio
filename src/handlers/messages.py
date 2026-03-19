@@ -1,18 +1,49 @@
 import sqlite3
+import re
 from telegram import Update
 from telegram.constants import ChatAction, ParseMode
 from telegram.ext import ContextTypes
 
-def escape_markdown(text: str) -> str:
-    """Escape special Markdown characters in text"""
-    escape_chars = '*_`[]()#>+-=!|'
-    return ''.join(f'\\{char}' if char in escape_chars else char for char in text)
 from src.database.models import (
     upsert_user, get_user_settings, create_conversation, set_user_setting,
     append_message, get_messages, append_summary, clear_conversation_messages
 )
 from src.api.lm_studio import call_lm_studio_chat, summarize_conversation
+from src.config.logging_config import logger
 from src.config.settings import DB_FILE, TOKEN_THRESHOLD
+
+def markdown_to_html(text: str) -> str:
+    """Convert Markdown to Telegram-compatible HTML"""
+    html = text
+
+    html = html.replace('&', '&amp;')
+    html = html.replace('<', '&lt;')
+    html = html.replace('>', '&gt;')
+
+    html = re.sub(r'```([\s\S]*?)```', r'<pre>\1</pre>', html)
+
+    html = re.sub(r'`([^`]+)`', r'<code>\1</code>', html)
+
+    html = re.sub(r'\*\*([^*]+)\*\*', r'<b>\1</b>', html)
+    html = re.sub(r'__(.+?)__', r'<b>\1</b>', html)
+
+    html = re.sub(r'(?<!\*)\*([^*]+)\*(?!\*)', r'<i>\1</i>', html)
+    html = re.sub(r'(?<!_)_(?!_)(.+?)(?<!_)_(?!_)', r'<i>\1</i>', html)
+
+    html = re.sub(r'~~([^~]+)~~', r'<s>\1</s>', html)
+
+    html = re.sub(r'^### (.+)$', r'<b>\1</b>', html, flags=re.MULTILINE)
+    html = re.sub(r'^## (.+)$', r'<b>\1</b>', html, flags=re.MULTILINE)
+    html = re.sub(r'^# (.+)$', r'<b>\1</b>', html, flags=re.MULTILINE)
+
+    html = re.sub(r'\[([^\]]+)\]\(([^)]+)\)', r'<a href="\2">\1</a>', html)
+
+    html = re.sub(r'^-\s+(.+)$', r'• \1', html, flags=re.MULTILINE)
+    html = re.sub(r'^\d+\.\s+(.+)$', r'• \1', html, flags=re.MULTILINE)
+
+    html = re.sub(r'\n{3,}', '\n\n', html)
+
+    return html
 
 async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -45,7 +76,7 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = call_lm_studio_chat(msgs, model)
     if "error" in data:
         await update.message.reply_text(
-            f"API Error: {data['error']}", parse_mode=ParseMode.MARKDOWN
+            f"API Error: {data['error']}", parse_mode=ParseMode.HTML
         )
         return
 
@@ -54,7 +85,7 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
         usage = data.get("usage", {})
     except:
         await update.message.reply_text(
-            "No content in response.", parse_mode=ParseMode.MARKDOWN
+            "No content in response.", parse_mode=ParseMode.HTML
         )
         return
 
@@ -70,6 +101,7 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
             clear_conversation_messages(cid)
             usage_msg = "\n\n🔄 Context summarized and reset."
 
+    processed_text = markdown_to_html(assistant_text + usage_msg)
     await update.message.reply_text(
-        assistant_text + usage_msg, parse_mode=None
+        processed_text, parse_mode=ParseMode.HTML
     )

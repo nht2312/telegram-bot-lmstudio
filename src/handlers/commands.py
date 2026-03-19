@@ -1,14 +1,52 @@
 import sqlite3
+import re
 from telegram import Update
 from telegram.constants import ParseMode
 from telegram.ext import ContextTypes
 
-def escape_markdown(text: str) -> str:
-    """Escape special Markdown characters in text"""
-    escape_chars = '*_`[]()#>+-=!|'
-    return ''.join(f'\\{char}' if char in escape_chars else char for char in text)
+def markdown_to_html(text: str) -> str:
+    """Convert Markdown to Telegram-compatible HTML"""
+    html = text
+
+    # Escape HTML special characters first
+    html = html.replace('&', '&amp;')
+    html = html.replace('<', '&lt;')
+    html = html.replace('>', '&gt;')
+
+    # Code blocks (```code```)
+    html = re.sub(r'```([\s\S]*?)```', r'<pre><code>\1</code></pre>', html)
+
+    # Inline code (`code`)
+    html = re.sub(r'`([^`]+)`', r'<code>\1</code>', html)
+
+    # Bold (**text** or __text__)
+    html = re.sub(r'\*\*([^*]+)\*\*', r'<b>\1</b>', html)
+    html = re.sub(r'__([^_]+)__', r'<b>\1</b>', html)
+
+    # Italic (*text* or _text_)
+    html = re.sub(r'(?<!\*)\*([^*]+)\*(?!\*)', r'<i>\1</i>', html)
+    html = re.sub(r'(?<!_)_([^_]+)_(?!_)', r'<i>\1</i>', html)
+
+    # Strikethrough (~~text~~)
+    html = re.sub(r'~~([^~]+)~~', r'<s>\1</s>', html)
+
+    # Headers ### -> bold with newline
+    html = re.sub(r'^###\s+(.+)$', r'<b>\1</b>', html, flags=re.MULTILINE)
+    html = re.sub(r'^##\s+(.+)$', r'<b>\1</b>', html, flags=re.MULTILINE)
+    html = re.sub(r'^#\s+(.+)$', r'<b>\1</b>', html, flags=re.MULTILINE)
+
+    # Links [text](url)
+    html = re.sub(r'\[([^\]]+)\]\(([^)]+)\)', r'<a href="\2">\1</a>', html)
+
+    # Lists (- item)
+    html = re.sub(r'^-\s+(.+)$', r'• \1', html, flags=re.MULTILINE)
+
+    # Remove excessive newlines
+    html = re.sub(r'\n{3,}', '\n\n', html)
+
+    return html
 from src.database.models import (
-    get_user_settings, set_user_setting, create_conversation, 
+    get_user_settings, set_user_setting, create_conversation,
     get_user_conversations, switch_conversation, update_conversation_model,
     update_conversation_system_prompt, get_messages, clear_conversation_messages,
     append_summary, get_summaries
@@ -298,7 +336,8 @@ async def completion_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         txt = data["choices"][0]["text"]
         if not txt.strip():
             txt = "*No content returned.*"
-        await update.message.reply_text(txt, parse_mode=None)
+        html_content = markdown_to_html(txt)
+        await update.message.reply_text(html_content, parse_mode=ParseMode.HTML)
     except:
         await update.message.reply_text("*No text in response.*", parse_mode=ParseMode.MARKDOWN)
 

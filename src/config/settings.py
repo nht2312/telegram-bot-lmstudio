@@ -37,3 +37,8 @@ conversation_params = {
     "logit_bias": {},
     "seed": None,
 }
+
+LOADING_MESSAGE_ENABLED = os.getenv("LOADING_MESSAGE_ENABLED", "true").lower() == "true"
+LOADING_SUMMARIZE_ENABLED = os.getenv("LOADING_SUMMARIZE_ENABLED", "true").lower() == "true"
+LOADING_UPDATE_INTERVAL = int(os.getenv("LOADING_UPDATE_INTERVAL", "5"))
+LOADING_TIMEOUT = int(os.getenv("LOADING_TIMEOUT", "300"))

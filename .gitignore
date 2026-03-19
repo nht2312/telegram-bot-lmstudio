@@ -1,4 +1,6 @@
 conversations.db
 .env
+*.db-shm
+*.db-wal
 
 .history/

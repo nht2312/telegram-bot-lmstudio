@@ -53,6 +53,23 @@ def init_db():
                 timestamp INTEGER NOT NULL
             )
         """)
+        c.execute("PRAGMA user_version")
+        (schema_ver,) = c.fetchone()
+        if schema_ver < 1:
+            # Threads that still store the same model as user_settings.default_model were never
+            # customized via /set_model — clear so they follow DEFAULT_MODEL from .env.
+            c.execute("""
+                UPDATE user_conversations
+                SET model = NULL
+                WHERE conversation_id IN (
+                    SELECT uc.conversation_id
+                    FROM user_conversations AS uc
+                    INNER JOIN user_settings AS us ON us.user_id = uc.user_id
+                    WHERE us.default_model IS NOT NULL
+                      AND us.default_model = uc.model
+                )
+            """)
+            c.execute("PRAGMA user_version = 1")
     conn.close()
 
 def upsert_user(telegram_user: User):
@@ -75,7 +92,8 @@ def upsert_user(telegram_user: User):
         c.execute("""
             INSERT INTO user_settings (user_id, default_model, active_conversation_id)
             VALUES (?, ?, ?)
-            ON CONFLICT(user_id) DO NOTHING
+            ON CONFLICT(user_id) DO UPDATE SET
+                default_model = excluded.default_model
         """, (user_id, DEFAULT_MODEL, None))
 
 def get_user_settings(user_id: int) -> dict:
@@ -87,6 +105,25 @@ def get_user_settings(user_id: int) -> dict:
             return {"default_model": row[0], "active_conversation_id": row[1]}
     return {"default_model": DEFAULT_MODEL, "active_conversation_id": None}
 
+def resolve_conversation_model(conversation_id: int, user_id: int) -> str:
+    """DB model NULL/empty => use DEFAULT_MODEL from .env (see create_conversation, migration)."""
+    with sqlite3.connect(DB_FILE) as conn:
+        c = conn.cursor()
+        c.execute(
+            """
+            SELECT model FROM user_conversations
+            WHERE conversation_id = ? AND user_id = ?
+            """,
+            (conversation_id, user_id),
+        )
+        row = c.fetchone()
+    if not row:
+        return DEFAULT_MODEL
+    m = row[0]
+    if m is None or (isinstance(m, str) and not m.strip()):
+        return DEFAULT_MODEL
+    return str(m).strip()
+
 def set_user_setting(user_id: int, field: str, value):
     with sqlite3.connect(DB_FILE) as conn:
         c = conn.cursor()
@@ -94,8 +131,7 @@ def set_user_setting(user_id: int, field: str, value):
         c.execute(query, (value, user_id))
 
 def create_conversation(user_id: int, name: str, model: str = None) -> int:
-    if not model:
-        model = get_user_settings(user_id)["default_model"]
+    # model=None => NULL in DB; resolve_conversation_model uses DEFAULT_MODEL from .env at runtime
     with sqlite3.connect(DB_FILE) as conn:
         c = conn.cursor()
         c.execute("""

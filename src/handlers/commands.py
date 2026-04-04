@@ -51,7 +51,8 @@ from src.database.models import (
     get_user_conversations, switch_conversation, update_conversation_model,
     update_conversation_system_prompt, get_messages, clear_conversation_messages,
     append_summary, get_summaries, get_user_stats, get_global_stats,
-    get_conversation_stats, init_usage_log_table, log_usage
+    get_conversation_stats, init_usage_log_table, log_usage,
+    resolve_conversation_model,
 )
 from src.api.lm_studio import (
     list_models, call_lm_studio_completions, call_lm_studio_embeddings,
@@ -86,16 +87,17 @@ async def summarize_thread_command(update: Update, context: ContextTypes.DEFAULT
 
     with sqlite3.connect(DB_FILE) as conn:
         c = conn.cursor()
-        c.execute("SELECT model FROM user_conversations WHERE conversation_id = ?", (cid,))
-        row = c.fetchone()
-
-    if not row:
-        await update.message.reply_text(
-            "*Conversation not found.*", parse_mode=ParseMode.MARKDOWN
+        c.execute(
+            "SELECT 1 FROM user_conversations WHERE conversation_id = ? AND user_id = ?",
+            (cid, user_id),
         )
-        return
+        if not c.fetchone():
+            await update.message.reply_text(
+                "*Conversation not found.*", parse_mode=ParseMode.MARKDOWN
+            )
+            return
 
-    model = row[0] if row[0] else DEFAULT_MODEL
+    model = resolve_conversation_model(cid, user_id)
 
     summary_text = summarize_conversation(cid, model)
     if summary_text.startswith("Summary error") or summary_text.startswith("Failed"):
@@ -211,8 +213,9 @@ async def list_threads_command(update: Update, context: ContextTypes.DEFAULT_TYP
         cid = c["conversation_id"]
         cname_escaped = c["conversation_name"].replace("_", "\\_")
         active_prefix = "**(active)** " if cid == s["active_conversation_id"] else ""
+        m = resolve_conversation_model(cid, user_id)
         lines.append(
-            f"{active_prefix}**ID {cid}**: [{cname_escaped}](/{'switch_thread'} {cid}) -> Model: `{c['model']}`"
+            f"{active_prefix}**ID {cid}**: [{cname_escaped}](/{'switch_thread'} {cid}) -> Model: `{m}`"
         )
 
     out_text = "*Your conversations:*\n\n" + "\n".join(lines)
@@ -316,14 +319,7 @@ async def completion_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return
     s = get_user_settings(user_id)
     cid = s["active_conversation_id"]
-    model = s["default_model"]
-    if cid:
-        with sqlite3.connect(DB_FILE) as conn:
-            c = conn.cursor()
-            c.execute("SELECT model FROM user_conversations WHERE conversation_id = ?", (cid,))
-            row = c.fetchone()
-            if row and row[0]:
-                model = row[0]
+    model = resolve_conversation_model(cid, user_id) if cid else DEFAULT_MODEL
 
     await update.message.reply_text(
         f"Requesting completion with model: `{model}`...",
@@ -359,14 +355,7 @@ async def embedding_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     s = get_user_settings(user_id)
     cid = s["active_conversation_id"]
-    model = s["default_model"]
-    if cid:
-        with sqlite3.connect(DB_FILE) as conn:
-            c = conn.cursor()
-            c.execute("SELECT model FROM user_conversations WHERE conversation_id = ?", (cid,))
-            row = c.fetchone()
-            if row and row[0]:
-                model = row[0]
+    model = resolve_conversation_model(cid, user_id) if cid else DEFAULT_MODEL
 
     await update.message.reply_text(
         f"Requesting embedding with model: `{model}`...",

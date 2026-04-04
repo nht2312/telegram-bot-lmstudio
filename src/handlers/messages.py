@@ -10,7 +10,7 @@ from telegram.ext import ContextTypes
 from src.database.models import (
     upsert_user, get_user_settings, create_conversation, set_user_setting,
     append_message, get_messages, append_summary, clear_conversation_messages,
-    log_usage, init_usage_log_table
+    log_usage, init_usage_log_table, resolve_conversation_model,
 )
 from src.api.lm_studio import call_lm_studio_chat, stream_lm_studio_chat, summarize_conversation
 from src.config.logging_config import logger
@@ -226,11 +226,11 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     with sqlite3.connect(DB_FILE) as conn:
         c = conn.cursor()
-        c.execute("SELECT model, system_prompt FROM user_conversations WHERE conversation_id = ?", (cid,))
+        c.execute("SELECT system_prompt FROM user_conversations WHERE conversation_id = ?", (cid,))
         row = c.fetchone()
 
-    model = row[0] if row and row[0] else s["default_model"]
-    system_prompt = row[1] if row and row[1] else ""
+    model = resolve_conversation_model(cid, user.id)
+    system_prompt = row[0] if row and row[0] else ""
 
     msgs = []
     if system_prompt.strip():
